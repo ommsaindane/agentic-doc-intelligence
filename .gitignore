@@ -1,0 +1,53 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Test / typecheck / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Virtual environments
+.venv/
+venv/
+.env/
+
+# Environment variable files (secrets)
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.sample
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Local data (often large and/or sensitive)
+data/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# IDEs / OS
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+.DS_Store
+Thumbs.db
