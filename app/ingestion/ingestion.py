@@ -1,9 +1,16 @@
-"""
+"""app.ingestion.ingestion
+
 Document ingestion module.
 
-Uses `langchain-unstructured` with `UnstructuredLoader` (strategy="hi_res")
-for layout-aware parsing with automatic OCR. All loading uses `lazy_load()`
-to stream pages as a generator – safe for large documents.
+This repository ingests **PDFs only** and extracts text deterministically using
+PyMuPDF (`pymupdf`, imported as `fitz`). No OCR is performed.
+
+Loading yields one `langchain_core.documents.Document` per page with metadata
+required for citations:
+
+- `source`: absolute file path
+- `page_number`: 1-based page number
+- `element_type`: set to "page"
 """
 
 from __future__ import annotations
@@ -13,15 +20,13 @@ from pathlib import Path
 from typing import Generator
 
 from langchain_core.documents import Document
-from langchain_unstructured import UnstructuredLoader
+import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
 # ── Supported extensions ────────────────────────────────────────────
 SUPPORTED_EXTENSIONS: set[str] = {
-    ".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp",
-    ".docx", ".doc", ".pptx", ".xlsx", ".html", ".txt", ".md",
-    ".eml", ".msg",
+    ".pdf",
 }
 
 
@@ -42,13 +47,9 @@ def _validate_path(path: Path) -> Path:
 
 def load_document(file_path: str | Path) -> Generator[Document, None, None]:
     """
-    Lazily load a single document using Unstructured hi-res strategy.
+    Lazily load a single PDF document using PyMuPDF.
 
-    Yields `langchain_core.documents.Document` objects one element at a
-    time so arbitrarily large files never blow up memory.
-
-    Each yielded Document carries rich metadata added by Unstructured
-    (page number, element type, coordinates, etc.) plus the source path.
+    Yields one `langchain_core.documents.Document` per page.
 
     Parameters
     ----------
@@ -58,25 +59,36 @@ def load_document(file_path: str | Path) -> Generator[Document, None, None]:
     Yields
     ------
     Document
-        One document chunk per structural element detected by Unstructured.
+        One document per PDF page.
     """
     path = _validate_path(Path(file_path))
     logger.info("Loading document: %s", path)
 
-    loader = UnstructuredLoader(
-        file_path=str(path),
-        strategy="hi_res",          # layout detection + OCR
-        mode="elements",            # one Document per structural element
-    )
+    page_count = 0
+    try:
+        with fitz.open(str(path)) as pdf:
+            if pdf.page_count <= 0:
+                raise ValueError(f"PDF has no pages: {path}")
 
-    element_count = 0
-    for doc in loader.lazy_load():
-        # Ensure every chunk carries a source reference for citation
-        doc.metadata.setdefault("source", str(path))
-        element_count += 1
-        yield doc
+            for idx in range(pdf.page_count):
+                page = pdf.load_page(idx)
+                text = (page.get_text("text") or "").strip()
 
-    logger.info("Finished loading %s – %d elements extracted.", path.name, element_count)
+                # Deterministic ingestion: if a page has no extractable text,
+                # still yield an empty page so citations remain consistent.
+                yield Document(
+                    page_content=text,
+                    metadata={
+                        "source": str(path),
+                        "page_number": idx + 1,
+                        "element_type": "page",
+                    },
+                )
+                page_count += 1
+    except Exception as exc:
+        raise ValueError(f"Failed to parse PDF with PyMuPDF: {path}. Error: {exc}") from exc
+
+    logger.info("Finished loading %s – %d page(s) extracted.", path.name, page_count)
 
 
 def load_directory(

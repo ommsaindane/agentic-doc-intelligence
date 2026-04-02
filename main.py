@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 class IngestRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
     file_path: str = Field(description="Path to a local file (e.g. PDF) to ingest.")
     chunk_strategy: str = Field(
         default="recursive",
@@ -37,6 +39,8 @@ class IngestResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
     query: str
     document_ids: list[str] = Field(
         default_factory=list,
@@ -45,7 +49,6 @@ class QueryRequest(BaseModel):
     max_rounds: int = 2
     semantic_k: int = 10
     bm25_k: int = 10
-    compress: bool = True
     thread_id: Optional[str] = Field(
         default=None,
         description=(
@@ -136,8 +139,17 @@ def _require_services(app: FastAPI, *, require_embeddings: bool) -> _AppServices
     if services.init_error:
         raise HTTPException(status_code=500, detail=services.init_error)
     if require_embeddings and services.embeddings is None:
-        detail = services.embeddings_error or "Embeddings are not initialized."
-        raise HTTPException(status_code=500, detail=detail)
+        # Ollama may start after the API. Try a one-time lazy init.
+        try:
+            embeddings = get_embedding_model()
+            services.embeddings = embeddings
+            services.vector_store = VectorStore(embeddings)
+            services.retrieval_agent = RetrievalAgent(embeddings=embeddings)
+            services.embeddings_error = None
+        except Exception as exc:
+            services.embeddings_error = str(exc)
+            detail = services.embeddings_error or "Embeddings are not initialized."
+            raise HTTPException(status_code=500, detail=detail)
     return services
 
 
@@ -203,7 +215,6 @@ async def query(req: QueryRequest) -> QueryResponse:
             max_rounds=req.max_rounds,
             semantic_k=req.semantic_k,
             bm25_k=req.bm25_k,
-            compress=req.compress,
             thread_id=req.thread_id,
         )
     finally:

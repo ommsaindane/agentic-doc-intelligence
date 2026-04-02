@@ -1,0 +1,6 @@
+.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+
+curl -X POST http://127.0.0.1:8000/ingest -H "Content-Type: application/json" -d "{\"file_path\":\"data/raw/prompt_engg.pdf\",\"chunk_strategy\":\"recursive\"}"
+
+
+curl -X POST http://127.0.0.1:8000/query -H "Content-Type: application/json" -d "{\"query\":\"What are the key obligations?\"}"

@@ -31,7 +31,7 @@ class AgentRunStatus(str, Enum):
 
 # ── SQLAlchemy ORM Models ──────────────────────────────────────────
 # These define the actual Postgres tables. Notice that we store
-# doc_metadata as a JSON column — this is intentional. Unstructured
+    # doc_metadata as a JSON column — this is intentional.
 # documents have wildly varying metadata (some have authors, some have
 # page counts, some have neither), so a flexible JSON column beats
 # adding 15 nullable columns you'll mostly never use.
@@ -70,7 +70,7 @@ class DocumentModel(Base):
     )
 
     # Flexible metadata: page count, author, detected language, etc.
-    # Whatever UnstructuredLoader gives you, store it here.
+    # Store document-level metadata here (e.g., source).
     # The existing DB schema already uses a `metadata` JSON column.
     doc_metadata = Column("metadata", JSON, default=dict)
 
@@ -101,11 +101,11 @@ class ChunkModel(Base):
     # which enables precise citation like "page 4, paragraph 2" if needed.
     start_index = Column(Integer, nullable=True)
 
-    # Page number from UnstructuredLoader metadata.
+    # Page number from parser metadata.
     # Essential for human-readable citations ("see page 12").
     page_number = Column(Integer, nullable=True)
 
-    # What UnstructuredLoader tells us about this chunk's role in the document:
+    # What the parser tells us about this chunk's role in the document:
     # "NarrativeText", "Table", "Title", "ListItem", etc.
     # Your Analysis Agent should treat Table chunks very differently from NarrativeText.
     element_type = Column(String(64), nullable=True)

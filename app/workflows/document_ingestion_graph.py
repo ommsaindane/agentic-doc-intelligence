@@ -3,12 +3,11 @@
 LangGraph workflow for document ingestion.
 
 Nodes (sequential):
-	load → OCR/parse → chunk → embed → upsert to Pinecone → upsert to Postgres
+	load → parse → chunk → embed → upsert to Pinecone → upsert to Postgres
 
 Notes
 -----
-- OCR/parse is handled by `UnstructuredLoader(strategy="hi_res")` in
-  `app.ingestion.ingestion.load_document`.
+- Parse is handled by PyMuPDF (`pymupdf` / `fitz`) in `app.ingestion.ingestion.load_document`.
 - Chunking uses `app.ingestion.chunking.chunk_documents`.
 - Classification + structured extraction uses `app.agents.extraction_agent.ExtractionAgent`.
 - Pinecone upsert goes through `app.storage.vector_store.VectorStore`.
@@ -83,9 +82,9 @@ def _chunk_to_row(chunk: Document, *, document_id: uuid.UUID, chunk_index: int) 
 	chunk_id = uuid.uuid4()
 	metadata = chunk.metadata or {}
 
-	# Unstructured commonly uses `page_number` and `category`.
+	# Our loader provides `page_number` and an `element_type` (e.g., "page").
 	page_number = metadata.get("page_number")
-	element_type = metadata.get("category") or metadata.get("element_type")
+	element_type = metadata.get("element_type") or metadata.get("category")
 
 	# `add_start_index=True` adds this to metadata.
 	start_index = metadata.get("start_index")

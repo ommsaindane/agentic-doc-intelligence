@@ -15,7 +15,9 @@ Key LangGraph primitives used
   parallel nodes append to (e.g., `evidence_bundles`).
 - `Send` fan-out for per-document retrieval in parallel.
 - `Command` to update state + choose next node.
-- `MemorySaver` for checkpointing by default (caller can inject PostgresSaver).
+- Optional checkpointing (caller can inject a checkpointer such as `MemorySaver`
+	or a Postgres-backed saver). If a checkpointer is used, the caller must
+	provide a `thread_id` via LangGraph's `configurable` config.
 """
 
 from __future__ import annotations
@@ -49,7 +51,6 @@ class QAGraphState(TypedDict, total=False):
 	max_rounds: int
 	semantic_k: int
 	bm25_k: int
-	compress: bool
 
 	# Parallel retrieval outputs (reduced with operator.add)
 	# Each entry: {"document_id": str, "docs": [{"page_content": str, "metadata": dict}, ...]}
@@ -118,8 +119,6 @@ def build_qa_graph(
 ):
 	"""Build and compile the QA graph with injected services."""
 
-	checkpointer = checkpointer or MemorySaver()
-
 	async def receive_query(state: QAGraphState) -> Command:
 		query = state["query"]
 		retrieval_round = int(state.get("retrieval_round", 0))
@@ -161,7 +160,6 @@ def build_qa_graph(
 					"document_id": doc_id,
 					"semantic_k": semantic_k,
 					"bm25_k": bm25_k,
-					"compress": bool(state.get("compress", True)),
 				},
 			)
 			for doc_id in document_ids
@@ -191,7 +189,6 @@ def build_qa_graph(
 		document_id: str = state["document_id"]
 		semantic_k: int = int(state.get("semantic_k", 12))
 		bm25_k: int = int(state.get("bm25_k", 12))
-		compress: bool = bool(state.get("compress", True))
 
 		# Pinecone metadata filter: restrict to one doc.
 		pinecone_filter = {"document_id": {"$eq": document_id}}
@@ -205,7 +202,6 @@ def build_qa_graph(
 			bm25_corpus=bm25_corpus,
 			semantic_k=semantic_k,
 			bm25_k=bm25_k,
-			compress=compress,
 			max_results=8,
 		)
 
@@ -300,8 +296,9 @@ def build_qa_graph(
 	graph.add_edge("format_response", END)
 
 	# Note: verifier routing is handled via `Command.goto`.
-	compiled = graph.compile(checkpointer=checkpointer)
-	return compiled
+	if checkpointer is None:
+		return graph.compile()
+	return graph.compile(checkpointer=checkpointer)
 
 
 async def run_qa_graph(
@@ -315,17 +312,25 @@ async def run_qa_graph(
 	max_rounds: int = 2,
 	semantic_k: int = 10,
 	bm25_k: int = 10,
-	compress: bool = True,
 	checkpointer: Any | None = None,
 	thread_id: Optional[str] = None,
 ) -> dict[str, Any]:
 	"""Convenience wrapper to execute the compiled QA graph."""
+	if (checkpointer is not None) and (not thread_id):
+		raise ValueError("thread_id is required when a checkpointer is provided")
+
+	checkpointer_to_use: Any | None = None
+	config: dict[str, Any] = {}
+	if thread_id:
+		checkpointer_to_use = checkpointer or MemorySaver()
+		config = {"configurable": {"thread_id": thread_id}}
+
 	graph = build_qa_graph(
 		sql_store=sql_store,
 		retrieval_agent=retrieval_agent,
 		analysis_agent=analysis_agent,
 		verifier_agent=verifier_agent,
-		checkpointer=checkpointer,
+		checkpointer=checkpointer_to_use,
 	)
 
 	initial: QAGraphState = {
@@ -335,13 +340,8 @@ async def run_qa_graph(
 		"max_rounds": max_rounds,
 		"semantic_k": semantic_k,
 		"bm25_k": bm25_k,
-		"compress": compress,
 		"evidence_bundles": [],
 	}
-
-	config: dict[str, Any] = {}
-	if thread_id:
-		config = {"configurable": {"thread_id": thread_id}}
 
 	final_state: QAGraphState = await graph.ainvoke(initial, config=config)
 	return final_state.get("response") or {}

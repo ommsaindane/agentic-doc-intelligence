@@ -10,6 +10,8 @@ about provider details.
 from __future__ import annotations
 
 import logging
+import os
+from urllib.parse import urlparse
 
 from langchain_ollama import OllamaEmbeddings
 
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # ── Defaults ────────────────────────────────────────────────────────
 DEFAULT_MODEL: str = "qwen3-embedding:8b"
-DEFAULT_BASE_URL: str = "http://localhost:11434"
+DEFAULT_BASE_URL: str = "http://127.0.0.1:11434"
 
 
 class QwenEmbeddingError(Exception):
@@ -25,8 +27,8 @@ class QwenEmbeddingError(Exception):
 
 
 def get_embedding_model(
-    model: str = DEFAULT_MODEL,
-    base_url: str = DEFAULT_BASE_URL,
+    model: str | None = None,
+    base_url: str | None = None,
 ) -> OllamaEmbeddings:
     """
     Return a configured `OllamaEmbeddings` instance.
@@ -49,19 +51,32 @@ def get_embedding_model(
         If a quick smoke-test embed call fails (server down, model not
         pulled, etc.).
     """
-    embeddings = OllamaEmbeddings(model=model, base_url=base_url)
+    resolved_model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
+    resolved_base_url = (
+        base_url
+        or os.getenv("OLLAMA_BASE_URL")
+        or os.getenv("OLLAMA_HOST")
+        or DEFAULT_BASE_URL
+    )
+
+    # Allow passing just "host:port".
+    parsed = urlparse(resolved_base_url)
+    if not parsed.scheme:
+        resolved_base_url = f"http://{resolved_base_url}"
+
+    embeddings = OllamaEmbeddings(model=resolved_model, base_url=resolved_base_url)
 
     # Smoke-test: embed a single token to fail fast if Ollama isn't ready.
     try:
         embeddings.embed_query("ping")
     except Exception as exc:
         raise QwenEmbeddingError(
-            f"Cannot reach Ollama at {base_url} with model '{model}'. "
-            f"Make sure `ollama serve` is running and the model is pulled. "
+            f"Cannot reach Ollama at {resolved_base_url} with model '{resolved_model}'. "
+            f"Make sure Ollama is running and the model is pulled. "
             f"Original error: {exc}"
         ) from exc
 
-    logger.info("Embedding model ready: %s @ %s", model, base_url)
+    logger.info("Embedding model ready: %s @ %s", resolved_model, resolved_base_url)
     return embeddings
 
 
