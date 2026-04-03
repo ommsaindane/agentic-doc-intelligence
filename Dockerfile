@@ -41,6 +41,10 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
 COPY --from=builder /app /app
 
+# Allow upload ingestion to write files under /app/data when running as non-root.
+RUN mkdir -p /app/data/raw /app/data/processed \
+ && chown -R appuser:appuser /app/data
+
 USER appuser
 
 EXPOSE 8000

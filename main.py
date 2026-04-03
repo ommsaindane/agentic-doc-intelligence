@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import File, Form, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -95,6 +99,11 @@ class QueryRequest(BaseModel):
         ),
     )
 
+    debug: bool = Field(
+        default=False,
+        description="If true, include retrieved chunk debug info in the response.",
+    )
+
 
 class QueryResponse(BaseModel):
     answer: str
@@ -102,6 +111,38 @@ class QueryResponse(BaseModel):
     citations: list[str] = Field(default_factory=list)
     rejected_claims: list[str] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
+
+    # Included only when QueryRequest.debug=true
+    debug: dict | None = None
+
+
+class DocumentInfo(BaseModel):
+    document_id: str
+    filename: str | None = None
+    status: str
+    doc_type: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class DocumentsResponse(BaseModel):
+    documents: list[DocumentInfo]
+
+
+class ChunksByIdsRequest(BaseModel):
+    chunk_ids: list[str] = Field(min_length=1)
+
+
+class ChunkSnippet(BaseModel):
+    chunk_id: str
+    document_id: str
+    page_number: int | None = None
+    element_type: str | None = None
+    chunk_index: int
+    section_title: str | None = None
+    section_level: int | None = None
+    layout_type: str | None = None
+    content: str
 
 
 class _AppServices:
@@ -236,6 +277,134 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks) -> Inges
     return IngestResponse(document_id=document_id, status="scheduled")
 
 
+def _safe_filename(name: str) -> str:
+    # Avoid path traversal and weird separators.
+    return Path(name).name or "upload.bin"
+
+
+def _save_upload(upload: UploadFile) -> str:
+    raw_dir = Path("data") / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    filename = _safe_filename(upload.filename or "upload.bin")
+    dest = raw_dir / f"{uuid.uuid4()}_{filename}"
+    with dest.open("wb") as out:
+        shutil.copyfileobj(upload.file, out)
+    return str(dest)
+
+
+@app.post("/ingest/upload", response_model=IngestResponse)
+async def ingest_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    chunk_strategy: str = Form("recursive"),
+    layout_aware: bool = Form(False),
+    enable_ocr: bool = Form(False),
+    ocr_language: str = Form("eng"),
+) -> IngestResponse:
+    services = _require_services(app, require_embeddings=True)
+    if services.vector_store is None or services.extraction_agent is None:
+        raise HTTPException(status_code=500, detail="Ingestion services are not initialized.")
+
+    saved_path = _save_upload(file)
+
+    sql_store = await _get_sql_store()
+    try:
+        doc = await sql_store.create_document(
+            filename=Path(saved_path).name,
+            file_path=saved_path,
+            doc_metadata={"source": "upload", "original_filename": _safe_filename(file.filename or "")},
+        )
+        document_id = str(doc.id)
+    finally:
+        await sql_store.session.close()
+
+    async def _run() -> None:
+        sql_store = await _get_sql_store()
+        try:
+            await run_ingestion_job(
+                file_path=saved_path,
+                sql_store=sql_store,
+                vector_store=services.vector_store,
+                extraction_agent=services.extraction_agent,
+                embeddings=services.embeddings,
+                document_id=uuid.UUID(document_id),
+                chunk_strategy=chunk_strategy,
+                layout_aware=layout_aware,
+                enable_ocr=enable_ocr,
+                ocr_language=ocr_language,
+            )
+        finally:
+            await sql_store.session.close()
+
+    background_tasks.add_task(_run)
+    return IngestResponse(document_id=document_id, status="scheduled")
+
+
+@app.get("/documents", response_model=DocumentsResponse)
+async def list_documents() -> DocumentsResponse:
+    sql_store = await _get_sql_store()
+    try:
+        docs = await sql_store.list_documents()
+        items = [
+            DocumentInfo(
+                document_id=str(d.id),
+                filename=getattr(d, "filename", None),
+                status=str(d.status.value if hasattr(d.status, "value") else d.status),
+                doc_type=getattr(d, "doc_type", None),
+                created_at=getattr(d, "created_at", None),
+                updated_at=getattr(d, "updated_at", None),
+            )
+            for d in docs
+        ]
+        return DocumentsResponse(documents=items)
+    finally:
+        await sql_store.session.close()
+
+
+@app.get("/documents/{document_id}", response_model=DocumentInfo)
+async def get_document(document_id: str) -> DocumentInfo:
+    sql_store = await _get_sql_store()
+    try:
+        doc = await sql_store.get_document(uuid.UUID(document_id))
+        if doc is None:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return DocumentInfo(
+            document_id=str(doc.id),
+            filename=getattr(doc, "filename", None),
+            status=str(doc.status.value if hasattr(doc.status, "value") else doc.status),
+            doc_type=getattr(doc, "doc_type", None),
+            created_at=getattr(doc, "created_at", None),
+            updated_at=getattr(doc, "updated_at", None),
+        )
+    finally:
+        await sql_store.session.close()
+
+
+@app.post("/chunks/by_ids", response_model=list[ChunkSnippet])
+async def chunks_by_ids(req: ChunksByIdsRequest) -> list[ChunkSnippet]:
+    sql_store = await _get_sql_store()
+    try:
+        chunks = await sql_store.get_chunks_by_ids(req.chunk_ids)
+        out: list[ChunkSnippet] = []
+        for c in chunks:
+            out.append(
+                ChunkSnippet(
+                    chunk_id=str(c.pinecone_id or c.id),
+                    document_id=str(c.document_id),
+                    page_number=c.page_number,
+                    element_type=c.element_type,
+                    chunk_index=c.chunk_index,
+                    section_title=getattr(c, "section_title", None),
+                    section_level=getattr(c, "section_level", None),
+                    layout_type=getattr(c, "layout_type", None),
+                    content=c.content,
+                )
+            )
+        return out
+    finally:
+        await sql_store.session.close()
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest) -> QueryResponse:
     services = _require_services(app, require_embeddings=True)
@@ -258,6 +427,7 @@ async def query(req: QueryRequest) -> QueryResponse:
             max_rounds=req.max_rounds,
             semantic_k=req.semantic_k,
             bm25_k=req.bm25_k,
+            debug=req.debug,
             thread_id=req.thread_id,
         )
     finally:

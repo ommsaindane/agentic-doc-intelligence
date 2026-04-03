@@ -45,6 +45,7 @@ class QAGraphState(TypedDict, total=False):
 	# Inputs
 	query: str
 	document_ids: list[str]  # optional scope
+	debug: bool
 
 	# Retrieval config
 	retrieval_round: int
@@ -205,6 +206,11 @@ def build_qa_graph(
 			max_results=8,
 		)
 
+		# Add deterministic ranks for debug visibility.
+		for rank, d in enumerate(docs, start=1):
+			d.metadata = dict(d.metadata or {})
+			d.metadata["_retrieval_rank"] = rank
+
 		bundle = {
 			"document_id": document_id,
 			"docs": [_doc_to_dict(d) for d in docs],
@@ -271,15 +277,23 @@ def build_qa_graph(
 		citations = verification.get("citations") or []
 		grounded = bool(verification.get("is_grounded", False))
 
-		return {
-			"response": {
-				"answer": final_text,
-				"is_grounded": grounded,
-				"citations": citations,
-				"rejected_claims": verification.get("rejected_claims", []),
-				"missing_evidence": verification.get("missing_evidence", []),
-			}
+		response: dict[str, Any] = {
+			"answer": final_text,
+			"is_grounded": grounded,
+			"citations": citations,
+			"rejected_claims": verification.get("rejected_claims", []),
+			"missing_evidence": verification.get("missing_evidence", []),
 		}
+
+		if bool(state.get("debug", False)):
+			response["debug"] = {
+				"reranker_enabled": bool(getattr(retrieval_agent, "_reranker", None)),
+				"evidence_bundles": state.get("evidence_bundles", []),
+				"merged_evidence": state.get("merged_evidence", []),
+				"retrieval_round": int(state.get("retrieval_round", 0)),
+			}
+
+		return {"response": response}
 
 	graph = StateGraph(QAGraphState)
 	graph.add_node("receive_query", receive_query)
@@ -312,6 +326,7 @@ async def run_qa_graph(
 	max_rounds: int = 2,
 	semantic_k: int = 10,
 	bm25_k: int = 10,
+	debug: bool = False,
 	checkpointer: Any | None = None,
 	thread_id: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -336,6 +351,7 @@ async def run_qa_graph(
 	initial: QAGraphState = {
 		"query": query,
 		"document_ids": document_ids or [],
+		"debug": debug,
 		"retrieval_round": 0,
 		"max_rounds": max_rounds,
 		"semantic_k": semantic_k,
