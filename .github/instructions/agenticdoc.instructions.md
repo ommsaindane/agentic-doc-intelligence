@@ -18,7 +18,7 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 # Coding Guidelines.
 
 * Use Python only 
-* Use as many tools and libraries as needed (e.g., Langchain(important), PyPDF2, OpenAI API, etc.) 
+* Use as many tools and libraries as needed (e.g., Langchain(important), OpenAI API, etc.) 
 * Search the web using MCP if you need to find libraries or solutions 
 * Prioritize use of libraries over custom code
 
@@ -36,6 +36,7 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 	- No retry/continue-on-fail loops that hide errors.
 - Answers may use “Not Available” only when **evidence is insufficient**, and must explicitly state what evidence is missing.
 
+---
 
 ## Architectural rules
 
@@ -47,6 +48,8 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 	- set document status transitions deterministically (`pending → processing → complete` or `failed`)
 	- record failures clearly (including error messages) and stop.
 
+---
+
 ### Workflow layer (LangGraph)
 
 - Workflows should be explicit and serializable:
@@ -57,6 +60,20 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 	- merge and dedupe evidence by `chunk_id`
 	- analyze → verify
 	- optional bounded re-retrieval rounds based on verifier grounding outcome.
+
+- QA Pipeline:
+```
+query
+→ rewrite (optional)
+→ retrieve (hybrid)
+→ rerank (optional)
+→ merge/dedupe
+→ analyze
+→ verify
+→ (optional bounded re-retrieval loop)
+```
+
+---
 
 ### Agent layer (LLM-backed)
 
@@ -72,6 +89,8 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 	- Enforce grounding: unsupported claims must be rejected and removed/qualified.
 	- Output must include `is_grounded`, `citations` (chunk IDs), `rejected_claims`, `missing_evidence`, and a `revised_answer`.
 
+---
+
 ### Retrieval layer
 
 - Keep hybrid retrieval, but without any LLM compression:
@@ -79,6 +98,34 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 	- BM25 hits over Postgres chunks
 	- deterministic merge and scoring
 - Ensure retrieval always preserves citation metadata: `chunk_id`, `document_id`, `page_number`, `element_type`, `chunk_index`.
+
+#### Optional Reranking (Tier 1)
+- Cross-encoder reranker
+- Applied after hybrid retrieval
+- Input: top_k (e.g. 50)
+- Output: top_n (e.g. 10)
+
+---
+
+### Ingestion layer (updated)
+
+#### Default
+- PyMuPDF parsing only
+
+#### Optional structured ingestion (Tier 1)
+- Layout-aware parsing allowed:
+  - headings
+  - sections
+  - tables
+
+Rules:
+- Must be deterministic
+- No OCR fallback unless explicitly enabled
+- Metadata must include:
+  - `section_title`
+  - `layout_type`
+
+---
 
 ### Storage layer
 
@@ -88,6 +135,23 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 	- agent_runs (workflow audit trail)
 - Pinecone stores:
 	- vectors keyed by `chunk_id` with minimal metadata needed for filtering.
+
+---
+
+## Observability (new requirement)
+
+Must support:
+
+- Tracing:
+  - retrieval inputs/outputs
+  - analysis outputs
+  - verification decisions
+
+Rules:
+- Observability must not affect runtime logic
+- Must be toggleable via config
+
+---
 
 ## Error handling rules
 
@@ -111,9 +175,9 @@ Use these instructions when generating code, refactoring, reviewing changes, or 
 - Do not introduce new frameworks or new UX/APIs unless explicitly requested.
 - If you remove dependencies (Unstructured/OCR stack, contextual compression), also:
 	- delete dead code paths
-	- remove unused env vars/options
-	- update `pyproject.toml` and README accordingly
+	- update `pyproject.toml` accordingly
 	- ensure ingestion and QA still function end-to-end.
+	- do not update readme until explicitly requested.
 
 ## Quick review checklist (use during PR/code review)
 
