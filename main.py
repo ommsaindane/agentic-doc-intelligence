@@ -24,12 +24,33 @@ logger = logging.getLogger(__name__)
 
 
 class IngestRequest(BaseModel):
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "populate_by_name": True}
 
     file_path: str = Field(description="Path to a local file (e.g. PDF) to ingest.")
     chunk_strategy: str = Field(
         default="recursive",
-        description="Chunking strategy: 'recursive' (default) or 'semantic'.",
+        description="Chunking strategy: 'recursive' (default), 'semantic', or 'section_aware'.",
+    )
+
+    layout_aware: bool = Field(
+        default=False,
+        description=(
+            "If true, use layout-aware parsing (PyMuPDF4LLM + PyMuPDF-Layout) to produce "
+            "structured elements and section metadata."
+        ),
+    )
+    enable_ocr: bool = Field(
+        default=False,
+        validation_alias="ocr_enabled",
+        description=(
+            "If true, OCR may be applied during parsing. This is strict opt-in: OCR is never used unless enabled."
+        ),
+    )
+    ocr_language: str = Field(
+        default="eng",
+        description=(
+            "OCR language code (Tesseract-style, e.g. 'eng' or 'eng+deu'). Only used when enable_ocr=true."
+        ),
     )
 
 
@@ -184,6 +205,9 @@ async def ingest(req: IngestRequest, background_tasks: BackgroundTasks) -> Inges
                 embeddings=services.embeddings,
                 document_id=doc.id,
                 chunk_strategy=req.chunk_strategy,
+                layout_aware=req.layout_aware,
+                enable_ocr=req.enable_ocr,
+                ocr_language=req.ocr_language,
             )
         finally:
             await sql_store.session.close()

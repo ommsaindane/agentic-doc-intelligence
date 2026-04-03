@@ -123,7 +123,7 @@ CLASSIFICATION_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
         "You are a document classification specialist.  Analyze the "
-        "provided text and determine the document type.  Return your "
+        "provided text (it may include Markdown headings and tables) and determine the document type.  Return your "
         "answer strictly in the requested structured format.",
     ),
     (
@@ -139,7 +139,7 @@ EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
         "You are an expert information extraction agent.  Extract all "
-        "structured knowledge from the document content below.  Follow "
+        "structured knowledge from the document content below (it may include Markdown headings and tables).  Follow "
         "the output schema precisely.\n\n{format_instructions}",
     ),
     (
@@ -166,7 +166,31 @@ def _default_llm() -> ChatOpenAI:
 def _prepare_content(chunks: list[Document], max_chunks: int = HEAD_CHUNKS) -> str:
     """Concatenate the first *max_chunks* chunks into a single string."""
     selected = chunks[:max_chunks]
-    return "\n\n".join(doc.page_content for doc in selected if doc.page_content.strip())
+    parts: list[str] = []
+    for idx, doc in enumerate(selected):
+        text = (doc.page_content or "").strip()
+        if not text:
+            continue
+
+        meta = doc.metadata or {}
+        page_number = meta.get("page_number")
+        section_title = meta.get("section_title")
+        layout_type = meta.get("layout_type") or meta.get("element_type")
+
+        header_bits: list[str] = []
+        if isinstance(page_number, int):
+            header_bits.append(f"page={page_number}")
+        if isinstance(section_title, str) and section_title.strip():
+            header_bits.append(f"section={section_title.strip()}")
+        if isinstance(layout_type, str) and layout_type.strip():
+            header_bits.append(f"type={layout_type.strip()}")
+
+        if header_bits:
+            parts.append(f"[chunk={idx} {' '.join(header_bits)}]\n{text}")
+        else:
+            parts.append(text)
+
+    return "\n\n".join(parts)
 
 
 class ExtractionAgent:

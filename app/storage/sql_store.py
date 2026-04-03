@@ -107,6 +107,9 @@ async def ensure_schema() -> None:
         await conn.execute(text("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS start_index integer;"))
         await conn.execute(text("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS page_number integer;"))
         await conn.execute(text("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS element_type varchar(64);"))
+        await conn.execute(text("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS section_title varchar(512);"))
+        await conn.execute(text("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS section_level integer;"))
+        await conn.execute(text("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS layout_type varchar(64);"))
         await conn.execute(text("ALTER TABLE chunks ADD COLUMN IF NOT EXISTS pinecone_id varchar(256);"))
 
 

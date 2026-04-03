@@ -122,6 +122,136 @@ def chunk_semantic(
     return chunks
 
 
+# ── Section-aware chunking ─────────────────────────────────────────
+def chunk_section_aware(
+    documents: Iterable[Document],
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> list[Document]:
+    """Chunk documents by section metadata, without splitting tables.
+
+    Expected input
+    --------------
+    Elements should carry (best-effort) metadata keys:
+      - `section_title` / `section_level`
+      - `layout_type` (e.g. "text", "table")
+
+    Behavior
+    --------
+    - Accumulates contiguous non-table elements under the same `section_title`.
+    - Emits each table element as a single chunk (no table splitting).
+    - Applies the existing recursive splitter to text groups so we still get
+      `start_index` and overlap behavior.
+    """
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        add_start_index=True,
+    )
+
+    chunks: list[Document] = []
+    buffer_parts: list[str] = []
+    buffer_pages: list[int] = []
+    buffer_meta: dict = {}
+
+    def flush_buffer() -> None:
+        nonlocal buffer_parts, buffer_pages, buffer_meta, chunks
+        if not buffer_parts:
+            buffer_pages = []
+            buffer_meta = {}
+            return
+
+        text = "\n\n".join(p for p in buffer_parts if p.strip()).strip()
+        if not text:
+            buffer_parts = []
+            buffer_pages = []
+            buffer_meta = {}
+            return
+
+        meta = dict(buffer_meta)
+        meta.pop("bbox", None)
+        if buffer_pages:
+            meta["page_numbers"] = sorted({p for p in buffer_pages if isinstance(p, int)})
+            meta["page_number"] = meta.get("page_number") or meta["page_numbers"][0]
+
+        # Normalize element/layout type for downstream storage.
+        layout_type = meta.get("layout_type") or meta.get("element_type")
+        if isinstance(layout_type, str) and layout_type:
+            meta["layout_type"] = layout_type
+            meta["element_type"] = meta.get("element_type") or layout_type
+        else:
+            meta["layout_type"] = meta.get("layout_type") or "text"
+            meta["element_type"] = meta.get("element_type") or "text"
+
+        doc = Document(page_content=text, metadata=meta)
+        chunks.extend(splitter.split_documents([doc]))
+
+        buffer_parts = []
+        buffer_pages = []
+        buffer_meta = {}
+
+    docs = list(documents)
+    for doc in docs:
+        content = (doc.page_content or "").strip()
+        if not content:
+            continue
+
+        meta = doc.metadata or {}
+        section_title = meta.get("section_title")
+        section_level = meta.get("section_level")
+        layout_type = (meta.get("layout_type") or meta.get("element_type") or "text")
+        if isinstance(layout_type, str):
+            layout_type = layout_type.lower()
+        else:
+            layout_type = "text"
+
+        # Tables are emitted as single chunks.
+        if layout_type == "table":
+            flush_buffer()
+
+            table_meta = dict(meta)
+            table_meta.pop("bbox", None)
+            table_meta["layout_type"] = meta.get("layout_type") or "table"
+            table_meta["element_type"] = meta.get("element_type") or "table"
+            chunks.append(Document(page_content=content, metadata=table_meta))
+            continue
+
+        # Start a new section group when section_title changes.
+        if buffer_meta:
+            if section_title != buffer_meta.get("section_title") or section_level != buffer_meta.get(
+                "section_level"
+            ):
+                flush_buffer()
+
+        if not buffer_meta:
+            buffer_meta = {
+                "source": meta.get("source"),
+                "page_number": meta.get("page_number"),
+                "section_title": section_title,
+                "section_level": section_level,
+                "layout_type": meta.get("layout_type") or "text",
+                "element_type": meta.get("element_type") or "text",
+                "layout_aware": bool(meta.get("layout_aware")),
+            }
+
+        page_number = meta.get("page_number")
+        if isinstance(page_number, int):
+            buffer_pages.append(page_number)
+        buffer_parts.append(content)
+
+    flush_buffer()
+
+    logger.info(
+        "Section-aware chunking: %d docs → %d chunks (size=%d, overlap=%d)",
+        len(docs),
+        len(chunks),
+        chunk_size,
+        chunk_overlap,
+    )
+    return chunks
+
+
 # ── Convenience dispatcher ──────────────────────────────────────────
 def chunk_documents(
     documents: Iterable[Document],
@@ -178,7 +308,14 @@ def chunk_documents(
             breakpoint_threshold_amount=breakpoint_threshold_amount,
         )
 
+    if strategy == "section_aware":
+        return chunk_section_aware(
+            documents,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+
     raise ValueError(
         f"Unknown chunking strategy '{strategy}'. "
-        "Choose 'recursive' or 'semantic'."
+        "Choose 'recursive', 'semantic', or 'section_aware'."
     )

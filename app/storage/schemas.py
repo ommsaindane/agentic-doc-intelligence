@@ -110,6 +110,12 @@ class ChunkModel(Base):
     # Your Analysis Agent should treat Table chunks very differently from NarrativeText.
     element_type = Column(String(64), nullable=True)
 
+    # Layout-aware ingestion metadata (optional).
+    # Stored as first-class columns for easy filtering / debugging.
+    section_title = Column(String(512), nullable=True)
+    section_level = Column(Integer, nullable=True)
+    layout_type = Column(String(64), nullable=True)
+
     # Pinecone vector ID — the same UUID stored as the Pinecone record ID.
     # When Pinecone returns results, you use this to fetch the full chunk from Postgres.
     # Keeping them identical (not just linked) makes lookups trivial.
@@ -192,6 +198,9 @@ class ChunkOut(BaseModel):
     content: str
     chunk_index: int
     element_type: Optional[str] = None
+    section_title: Optional[str] = None
+    section_level: Optional[int] = None
+    layout_type: Optional[str] = None
     start_index: Optional[int] = None
     page_number: Optional[int] = None
     chunk_metadata: dict = Field(default_factory=dict)

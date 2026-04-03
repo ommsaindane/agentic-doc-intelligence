@@ -31,7 +31,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.extraction_agent import DocType, ExtractionAgent, ExtractionResult
 from app.ingestion.chunking import chunk_documents
-from app.ingestion.ingestion import load_document
+from app.ingestion.ingestion import load_document, load_document_layout_aware
 from app.storage.schemas import ChunkModel, DocumentStatus
 from app.storage.sql_store import SQLStore
 from app.storage.vector_store import VectorStore
@@ -45,6 +45,9 @@ class IngestionState(TypedDict, total=False):
 	# Inputs
 	file_path: str
 	chunk_strategy: str  # "recursive" | "semantic"
+	layout_aware: bool
+	enable_ocr: bool
+	ocr_language: str
 
 	# Runtime services (injected via closure; kept here for debugging only)
 	# NOTE: not checkpoint-safe; intended for in-process background execution.
@@ -85,6 +88,9 @@ def _chunk_to_row(chunk: Document, *, document_id: uuid.UUID, chunk_index: int) 
 	# Our loader provides `page_number` and an `element_type` (e.g., "page").
 	page_number = metadata.get("page_number")
 	element_type = metadata.get("element_type") or metadata.get("category")
+	section_title = metadata.get("section_title")
+	section_level = metadata.get("section_level")
+	layout_type = metadata.get("layout_type")
 
 	# `add_start_index=True` adds this to metadata.
 	start_index = metadata.get("start_index")
@@ -97,6 +103,9 @@ def _chunk_to_row(chunk: Document, *, document_id: uuid.UUID, chunk_index: int) 
 		"start_index": start_index,
 		"page_number": page_number,
 		"element_type": element_type,
+		"section_title": section_title,
+		"section_level": section_level,
+		"layout_type": layout_type,
 		"pinecone_id": str(chunk_id),
 		"chunk_metadata": metadata,
 	}
@@ -147,7 +156,16 @@ def build_document_ingestion_graph(
 
 	async def parse_node(state: IngestionState) -> dict[str, Any]:
 		file_path = state["file_path"]
-		elements = list(load_document(file_path))
+		if state.get("layout_aware"):
+			elements = list(
+				load_document_layout_aware(
+					file_path,
+					enable_ocr=bool(state.get("enable_ocr")),
+					ocr_language=str(state.get("ocr_language") or "eng"),
+				)
+			)
+		else:
+			elements = list(load_document(file_path))
 		logger.info("Parsed %d elements from %s", len(elements), file_path)
 		return {"elements": elements}
 
@@ -288,6 +306,9 @@ async def run_ingestion_job(
 	embeddings: Optional[Embeddings] = None,
 	document_id: uuid.UUID | None = None,
 	chunk_strategy: str = "recursive",
+	layout_aware: bool = False,
+	enable_ocr: bool = False,
+	ocr_language: str = "eng",
 ) -> IngestionState:
 	"""Convenience helper to run the compiled graph with one call."""
 	graph = build_document_ingestion_graph(
@@ -296,7 +317,13 @@ async def run_ingestion_job(
 		extraction_agent=extraction_agent,
 		embeddings=embeddings,
 	)
-	initial: IngestionState = {"file_path": file_path, "chunk_strategy": chunk_strategy}
+	initial: IngestionState = {
+		"file_path": file_path,
+		"chunk_strategy": chunk_strategy,
+		"layout_aware": layout_aware,
+		"enable_ocr": enable_ocr,
+		"ocr_language": ocr_language,
+	}
 	if document_id is not None:
 		initial["document_id"] = document_id
 
