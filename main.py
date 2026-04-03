@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from app.agents.analysis_agent import AnalysisAgent
 from app.agents.extraction_agent import ExtractionAgent
@@ -21,6 +23,21 @@ from app.workflows.qa_graph import run_qa_graph
 
 
 logger = logging.getLogger(__name__)
+
+
+def _require_env(name: str) -> str:
+    val = (os.environ.get(name) or "").strip()
+    if not val:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return val
+
+
+def _validate_required_config() -> None:
+    # Fail fast on missing critical config.
+    _require_env("OPENAI_API_KEY")
+    _require_env("PINECONE_API_KEY")
+    _require_env("PINECONE_INDEX_NAME")
+    _require_env("DATABASE_URL")
 
 
 class IngestRequest(BaseModel):
@@ -112,41 +129,43 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO)
     app.state.services = _AppServices()
 
-    # Ensure DB tables exist (minimal bootstrap; for production prefer migrations).
-    try:
-        await _init_db()
-    except Exception as exc:
-        # Keep the app alive; endpoints will error with a clear message.
-        msg = f"Database init failed: {exc}"
-        app.state.services.init_error = msg
-        logger.exception(msg)
+    _validate_required_config()
 
-    # Embeddings (Ollama) — used by Pinecone retrieval and optional semantic chunking.
-    try:
-        embeddings = get_embedding_model()
-        app.state.services.embeddings = embeddings
-        app.state.services.vector_store = VectorStore(embeddings)
-        app.state.services.retrieval_agent = RetrievalAgent(embeddings=embeddings)
-    except QwenEmbeddingError as exc:
-        app.state.services.embeddings_error = str(exc)
-        logger.warning("Embeddings unavailable: %s", exc)
-    except Exception as exc:
-        app.state.services.init_error = f"Service init failed (embeddings/pinecone): {exc}"
-        logger.exception("Service init failed")
+    # Ensure DB tables exist (minimal bootstrap; for production prefer migrations).
+    await _init_db()
+
+    # Embeddings (Ollama) — initialized lazily on demand.
+    app.state.services.embeddings = None
+    app.state.services.vector_store = None
+    app.state.services.retrieval_agent = None
 
     # LLM-backed agents (OpenAI).
-    try:
-        app.state.services.extraction_agent = ExtractionAgent()
-        app.state.services.analysis_agent = AnalysisAgent()
-        app.state.services.verifier_agent = VerifierAgent()
-    except Exception as exc:
-        app.state.services.init_error = f"Service init failed (LLM agents): {exc}"
-        logger.exception("LLM agent init failed")
+    app.state.services.extraction_agent = ExtractionAgent()
+    app.state.services.analysis_agent = AnalysisAgent()
+    app.state.services.verifier_agent = VerifierAgent()
 
     yield
 
 
 app = FastAPI(title="Agentic Doc Intelligence", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health() -> dict:
+    """Basic health check for container orchestration.
+
+    Returns 200 only if DB is reachable and core services are initialized.
+    """
+    services = app.state.services
+    if getattr(services, "init_error", None):
+        raise HTTPException(status_code=503, detail=services.init_error)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unreachable: {exc}")
+
+    return {"status": "ok"}
 
 
 async def _get_sql_store() -> SQLStore:
@@ -160,9 +179,9 @@ def _require_services(app: FastAPI, *, require_embeddings: bool) -> _AppServices
     if services.init_error:
         raise HTTPException(status_code=500, detail=services.init_error)
     if require_embeddings and services.embeddings is None:
-        # Ollama may start after the API. Try a one-time lazy init.
+        # Initialize embeddings on demand. Verify connectivity/model so failures are explicit.
         try:
-            embeddings = get_embedding_model()
+            embeddings = get_embedding_model(verify=True)
             services.embeddings = embeddings
             services.vector_store = VectorStore(embeddings)
             services.retrieval_agent = RetrievalAgent(embeddings=embeddings)

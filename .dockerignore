@@ -1,0 +1,32 @@
+.git
+.github
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+.env
+.env.*
+*.log
+
+# Local data and artifacts
+/data
+/eval
+/scripts
+
+# Editors
+.vscode
+.idea
+
+# Model / cache artifacts
+**/*.pt
+**/*.bin
+**/*.onnx
+**/*.safetensors
+.hf_cache
+.cache
+
+# Misc
+REPO_OVERVIEW.md

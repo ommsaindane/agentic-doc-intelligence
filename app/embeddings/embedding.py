@@ -29,6 +29,8 @@ class QwenEmbeddingError(Exception):
 def get_embedding_model(
     model: str | None = None,
     base_url: str | None = None,
+    *,
+    verify: bool = False,
 ) -> OllamaEmbeddings:
     """
     Return a configured `OllamaEmbeddings` instance.
@@ -48,8 +50,8 @@ def get_embedding_model(
     Raises
     ------
     QwenEmbeddingError
-        If a quick smoke-test embed call fails (server down, model not
-        pulled, etc.).
+        If `verify=True` and a quick smoke-test embed call fails (server down,
+        model not pulled, etc.).
     """
     resolved_model = model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODEL
     resolved_base_url = (
@@ -66,17 +68,19 @@ def get_embedding_model(
 
     embeddings = OllamaEmbeddings(model=resolved_model, base_url=resolved_base_url)
 
-    # Smoke-test: embed a single token to fail fast if Ollama isn't ready.
-    try:
-        embeddings.embed_query("ping")
-    except Exception as exc:
-        raise QwenEmbeddingError(
-            f"Cannot reach Ollama at {resolved_base_url} with model '{resolved_model}'. "
-            f"Make sure Ollama is running and the model is pulled. "
-            f"Original error: {exc}"
-        ) from exc
+    if verify:
+        # Smoke-test: embed a single token to fail fast if Ollama isn't ready.
+        try:
+            embeddings.embed_query("ping")
+        except Exception as exc:
+            raise QwenEmbeddingError(
+                f"Cannot reach Ollama at {resolved_base_url} with model '{resolved_model}'. "
+                f"Make sure Ollama is running and the model is pulled. "
+                f"Original error: {exc}"
+            ) from exc
 
-    logger.info("Embedding model ready: %s @ %s", resolved_model, resolved_base_url)
+    if verify:
+        logger.info("Embedding model ready: %s @ %s", resolved_model, resolved_base_url)
     return embeddings
 
 

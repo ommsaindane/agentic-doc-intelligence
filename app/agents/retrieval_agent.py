@@ -88,7 +88,13 @@ class RetrievalAgent:
 
 		if self.enable_reranker:
 			# Fail-fast if enabled and model cannot be loaded.
-			from app.reranking.cross_encoder_reranker import CrossEncoderReranker
+			try:
+				from app.reranking.cross_encoder_reranker import CrossEncoderReranker
+			except Exception as exc:
+				raise RuntimeError(
+					"Reranker is enabled (ENABLE_RERANKER=true) but required dependencies are missing. "
+					"Install optional extras: `pip install .[reranker]` (or add torch+transformers)."
+				) from exc
 
 			self._reranker = CrossEncoderReranker(
 				model_name=self._reranker_model_name,
